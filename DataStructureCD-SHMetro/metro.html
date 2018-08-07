@@ -1,0 +1,1277 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title>数据结构课设应用作业 - 上海地铁寻路</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <script type="text/javascript" src="./svg.js"></script>
+    <script type="text/javascript" src="./svg.draggable.js"></script>
+    <script type="text/javascript" src="./SHMetroData.js"></script>
+
+    <style>
+        html, body {
+            height: 100%
+        }
+
+        .station:hover{
+            fill: red
+        }
+
+        .stationCaption{
+            cursor: default;
+        }
+
+        .optionTab {
+            margin-left: .5em;
+            margin-right: .5em;
+        }
+
+        .labelStation, .labelLine{
+            display: block;
+        }
+
+        .colorBox{
+            box-sizing: border-box;
+            content: " ";
+            width: 0.8em;
+            height: 0.8em;
+            display: inline-block;
+            border-width: 0.1em;
+            border-style: solid;
+            border-color: rgb(0, 0, 0);
+            border-image: initial;
+            margin: 0.1em 0.2em 0px;
+        }
+
+        #usual_options > p {
+            margin-top: 0.2em;
+            margin-bottom: 0.2em;
+            width: 100%;
+            display: flex;
+        }
+
+        #usual_options > p > span {
+            flex: 4;
+        }
+
+        #usual_options > p > input {
+            flex: 7;
+        }
+
+        .panel{
+            height: 95%
+        }
+
+        .panel_select{
+            overflow: auto;
+            height: 50%
+        }
+
+    </style>
+
+    <script type="text/javascript">
+        var draw
+        var borderRect
+        var drawLineLayer
+        var drawStationLayer
+
+        var viewPortMaxX = 2000
+        var viewPortMaxY = 2000
+
+        var stationRadius = 25
+        var stationStrokeWidth = 8
+        var stationStrokeColor = "black"
+        var stationFillColor = "white"
+        var stationStroke = {get color(){return stationStrokeColor}, get width(){return stationStrokeWidth}}
+        var stationFill = {get color(){return stationFillColor}}
+
+        var captionFontSize
+
+        var lineWidth = 10
+
+        var frameDragStartX
+        var frameDragStartY
+        var frameScrollStartX
+        var frameScrollStartY
+
+        var mapData = undefined
+        var mapGraph
+
+        var transferWeight = 3
+
+        var prevStation
+
+        var captionOffsetMaxX = 70
+        var captionOffsetMaxY = 50
+
+        var selectStationList = []
+        var selectLineList = []
+
+        var StationToSavePrototype = {
+            x: 30,
+            y: 30,
+            name: "[UNNAMED]",
+            id: undefined,
+            captionOffsetX: 0,
+            captionOffsetY: stationRadius,
+        }
+
+        var StationPrototype = {
+            _nested_: undefined,
+            _elemStation_: undefined,
+            _elemCaption_: undefined,
+
+            set nested(value){
+                if (this._nested_ != undefined)
+                    this._nested_.remove()
+
+                this._nested_ = value
+            },
+
+            get nested(){
+                return this._nested_
+            },
+
+            removeNested: function(){
+                this.nested = undefined
+            },
+
+            get elemStation(){
+                return this._elemStation_
+            },
+
+            get elemCaption(){
+                return this._elemCaption_
+            },
+
+            draw: function(){
+                let self = this
+
+                self.nested = drawStationLayer.nested()
+                self._elemStation_ = self.nested.circle(stationRadius).center(0, 0).stroke(stationStroke).fill(stationFill)
+                self._elemCaption_ = self.nested.text(self.name).font({"size": captionFontSize}).center(self.captionOffsetX, self.captionOffsetY)
+                self.nested.center(self.x, self.y)
+
+                self.nested.draggable({
+                    minX: 0, 
+                    minY: 2 * stationRadius,
+                    maxX: self.nested.doc().viewbox().width,
+                    maxY: self.nested.doc().viewbox().height,
+                }).on("dragmove", function(e){
+                    for (let i in mapData.lines){
+                        let line = mapData.lines[i]
+                        
+                        if (line.stations.indexOf(self.id) != -1){
+                            line.updateAtStation(self.id)
+                        }
+                    }
+                }).on("dragend", function(e){
+                    self.x = this.cx()
+                    self.y = this.cy()
+                    //allRedraw()
+                    
+                })
+
+                self.elemCaption.draggable({
+                    get minX(){return - captionOffsetMaxX}, 
+                    get minY(){return - captionOffsetMaxY},
+                    get maxX(){return + captionOffsetMaxX}, 
+                    get maxY(){return + captionOffsetMaxY},
+                }).on("dragend", function(e){
+                    self.captionOffsetX = this.cx()
+                    self.captionOffsetY = this.cy()
+                    //allRedraw()
+                })
+
+                self.elemStation.attr("class", "station")
+                self.elemCaption.attr("class", "stationCaption")
+            },
+
+            drawCaption: function(){
+                if (this._elemCaption_ == undefined)
+                    return
+                
+                this._elemCaption_.font({"size": captionFontSize}).center(this.captionOffsetX, this.captionOffsetY)
+            },
+
+            dispose: function(){
+                this.nested = undefined
+                this._elemCaption_ = undefined
+                this._elemStation_ = undefined
+            }
+        }
+        Object.setPrototypeOf(StationPrototype, StationToSavePrototype)
+        
+
+        function Station(name, id, x, y, nested){
+            if (arguments.length == 1){
+                stationToSave = name
+                for (let key in StationToSavePrototype){
+                    this[key] = stationToSave[key]
+                }
+            } else {
+                this.x = x
+                this.y = y
+                this.id = id
+                this.name = name
+                this.nested = nested
+            }
+        }
+        Station.prototype = StationPrototype
+
+        function StationToSave(station){
+            for (let key in StationToSavePrototype){
+                this[key] = station[key]
+            }
+        }
+        StationToSave.prototype = StationToSavePrototype
+
+        var LineToSavePrototype = {
+            name: "[UNNAMED]",
+            id: undefined,
+            drawOffset: 0,
+            color: "red",
+            stations: [],
+        }
+
+        var LinePrototype = {
+            _groupLine_: undefined,
+            _elemLegend_: undefined,
+            svgLines: [],
+
+            set groupLine(value)
+            {
+                if (this._groupLine_ != undefined){
+                    this._groupLine_.remove()
+                }
+
+                this._groupLine_ = value
+            },
+
+            get groupLine(){return this._groupLine_},
+
+            drawLine: function(x1, y1, x2, y2){
+                let sqrt = Math.sqrt((x1-x2)*(x1-x2) + (y1-y2)*(y1-y2))
+                let offsetX = (y1-y2) / sqrt * this.drawOffset
+                let offsetY = (x2-x1) / sqrt * this.drawOffset
+
+                let tempLine = this.groupLine.line(x1 + offsetX, y1 + offsetY, x2 + offsetX, y2 + offsetY).stroke({ color: this.color, width: lineWidth, linecap: 'round' })
+                
+                return tempLine
+            },
+
+            draw: function(){
+                this.groupLine = drawLineLayer.group()
+                
+                for (let i = 0; i < this.stations.length - 1; i++){
+                    let station = mapData.stations[this.stations[i]]
+                    let nextStation = mapData.stations[this.stations[i + 1]]
+                    
+                    this.svgLines[i] = this.drawLine(station.x, station.y, nextStation.x, nextStation.y)
+                }
+
+            },
+
+            updateAtStation: function(stationID){
+                let stationIndex = this.stations.indexOf(stationID)
+                let stationPrev = stationIndex > 0 ? mapData.stations[this.stations[stationIndex - 1]] : this.stations[0] == this.stations[this.stations.length - 1] ? mapData.stations[this.stations[this.stations.length - 2]] : undefined
+                let station = mapData.stations[stationID]
+                let stationNext = stationIndex != this.stations.length - 1 ? mapData.stations[this.stations[stationIndex + 1]] : undefined
+
+                if (stationPrev != undefined){
+                    let prevIndex = stationIndex == 0 ? this.stations.length - 2 : stationIndex - 1
+                    if (this.svgLines[prevIndex])
+                        this.svgLines[prevIndex].remove()
+                    this.svgLines[prevIndex] = this.drawLine(stationPrev.nested.cx(), stationPrev.nested.cy(), station.nested.cx(), station.nested.cy())
+                }
+
+                if (stationNext != undefined){
+                    if (this.svgLines[stationIndex])
+                        this.svgLines[stationIndex].remove()
+                    this.svgLines[stationIndex] = this.drawLine(station.nested.cx(), station.nested.cy(), stationNext.nested.cx(), stationNext.nested.cy())
+                }
+            },
+
+            dispose: function(){
+                this.groupLine = undefined
+                this.elemLegend = undefined
+            }
+        }
+        Object.setPrototypeOf(LinePrototype, LineToSavePrototype)
+
+        function Line(name, id, color, drawOffset, stations){
+            if (arguments.length == 1){
+                lineToSave = name
+                for (let key in LineToSavePrototype){
+                    this[key] = lineToSave[key]
+                }
+                this.svgLines = new Array()
+            } else {
+                this.name = name
+                this.id = id
+                this.color = color
+                this.drawOffset = drawOffset == undefined ? 0 : drawOffset
+                this.stations = stations.slice()
+                this.svgLines = new Array()
+            }
+        }
+        Line.prototype = LinePrototype
+
+        function LineToSave(line){
+            for (let key in LineToSavePrototype){
+                this[key] = line[key]
+            }
+        }
+        LineToSave.prototype = LineToSavePrototype
+
+        function dumpMapData(){
+            if (mapData) {
+                let mapDataToSave = {stations: {}, lines: {}}
+                for (id in mapData.stations){
+                    mapDataToSave.stations[id] = new StationToSave(mapData.stations[id])
+                }
+                for (id in mapData.lines){
+                    mapDataToSave.lines[id] = new LineToSave(mapData.lines[id])
+                }
+
+                return JSON.stringify(mapDataToSave)
+            }
+        }
+
+        function saveMapData(){
+            if (mapData) {
+                localStorage.savedMapData = dumpMapData()
+            }
+        }
+
+        function loadMapData(jsonStr){
+            if (jsonStr == undefined)
+                try{
+                    if (window['localStorage'] == undefined)
+                        return false
+                    else
+                        jsonStr = localStorage.savedMapData
+                } catch(err){
+                    return false
+                }
+
+            if (jsonStr != undefined) {
+                allClear()
+                mapData = {stations: {}, lines: {}}
+                let mapDataToLoad = JSON.parse(jsonStr)
+                for (let id in mapDataToLoad.stations){
+                    mapData.stations[id] = new Station(mapDataToLoad.stations[id])
+                }
+                for (let id in mapDataToLoad.lines){
+                    mapData.lines[id] = new Line(mapDataToLoad.lines[id])
+                }
+                allRedraw()
+                return true
+            }
+            return false
+        }
+
+        function stationRedraw(){
+            for (let id in mapData.stations){
+                mapData.stations[id].draw()
+            }
+        }
+
+        function lineRedraw(){
+            for (let id in mapData.lines){
+                mapData.lines[id].draw()
+            }
+        }
+
+        function allRedraw(){
+            if (mapData){
+                stationRedraw()
+                lineRedraw()
+            }
+        }
+
+        function captionRedraw(){
+            if (mapData){
+                for (let id in mapData.stations){
+                    mapData.stations[id].drawCaption()
+                }
+            }
+        }
+
+        function allClear(){
+            prevStation = undefined
+            if (mapData != undefined) {
+                for (let line in mapData.lines){
+                    mapData.lines[line].dispose()
+                    delete mapData.lines[line]
+                }
+
+                for (let station in mapData.stations){
+                    mapData.stations[station].dispose()
+                    delete mapData.stations[station]
+                }
+
+                drawLineRouteLayer.clear()
+            }
+        }
+
+        function addStationToLine(){
+            if (this.checked && this.getAttribute("rank") == -1){
+                let index = selectStationList.length
+                this.setAttribute("rank", index + 1)
+                document.getElementById("l_" + this.value).lastChild.textContent += " (" + (index + 1) + ")"
+                selectStationList.push(this.value)
+            } else {
+                let index = parseInt(this.getAttribute("rank")) - 1
+                if (index < 0){
+                    index = selectStationList.indexOf(this.value)
+                }
+                selectStationList.splice(index, 1)
+                document.getElementById("l_" + this.value).lastChild.textContent = this.value + " : " + mapData.stations[this.value].name
+
+                this.setAttribute("rank", -1)
+
+                for (let i = index; i < selectStationList.length; i++){
+                    let nodeLabel = document.getElementById("l_" + selectStationList[i])
+                    let node = document.getElementById("cb_" + selectStationList[i])
+                    nodeLabel.lastChild.textContent = node.value + " : " + mapData.stations[node.value].name + " (" + (i + 1) + ")"
+                    node.setAttribute("rank", (i + 1))
+                }
+            }
+
+            /* if (selectStationList.length == 1){
+                document.getElementById("cb_" + selectStationList[0]).disabled = true
+            } else {
+                document.getElementById("cb_" + selectStationList[0]).disabled = false
+            } */
+        }
+
+        function selectDeptDestStation(){
+            if (this.checked && this.getAttribute("rank") == -1){
+                let index = selectStationList.length
+                this.setAttribute("rank", index + 1)
+                document.getElementById("lro_" + this.value).lastChild.textContent += " (" + (index == 0 ? "起点" : "终点") + ")"
+                selectStationList.push(this.value)
+            } else {
+                let index = parseInt(this.getAttribute("rank")) - 1
+                if (index < 0){
+                    index = selectStationList.indexOf(this.value)
+                }
+                selectStationList.splice(index, 1)
+                document.getElementById("lro_" + this.value).lastChild.textContent = this.value + " : " + mapData.stations[this.value].name
+
+                this.setAttribute("rank", -1)
+
+                for (let i = index; i < selectStationList.length; i++){
+                    let nodeLabel = document.getElementById("lro_" + selectStationList[i])
+                    let node = document.getElementById("cbro_" + selectStationList[i])
+                    nodeLabel.lastChild.textContent = node.value + " : " + mapData.stations[node.value].name + " (" + (index == 0 ? "起点" : "终点") + ")"
+                    node.setAttribute("rank", (i + 1))
+                }
+            }
+
+            if (selectStationList.length == 2){
+                for (let id in mapData.stations){
+                    let node = document.getElementById("cbro_" + id)
+                    node.disabled = !node.checked
+                }
+            } else {
+                for (let id in mapData.stations){
+                    document.getElementById("cbro_" + id).disabled = false
+                }
+            }
+        }
+
+        function dataToGraph(){
+            if (mapData == undefined)
+                return;
+
+            mapGraph = {nodeNum: 0}   // 邻接表图
+
+            for (let i in mapData.stations){
+                let station = mapData.stations[i]
+                // 首先对于地图数据中的所有车站，每个车站建立一个“车站中心”结点
+                mapGraph[i] = {adj: []}
+                mapGraph.nodeNum++
+            }
+
+            for (let lineID in mapData.lines){
+                let line = mapData.lines[lineID]
+                // 再对于每个“车站-线路”的连接，对这个车站再建立两个“对于该线路的正方向/反方向而言的车站”结点，与“车站中心结点”连接。其中，“入”路径不为0，当作换乘消耗；“出”路径为0，防止重复计算换乘消耗。
+                let loop = line.stations[line.stations.length - 1] == line.stations[0]  // 是否为环线
+
+                for (let j = 0; j < line.stations.length; j++){
+                    let stationStr = line.stations[j]
+                    let posDirectStr = stationStr + "_" + lineID + "_" + "pos"
+                    let negDirectStr = stationStr + "_" + lineID + "_" + "neg"
+                    if (!(posDirectStr in mapGraph)){
+                        mapGraph[posDirectStr] = {indexInLine: j, adj: [[stationStr, transferWeight]]}
+                        mapGraph[stationStr].adj.push([posDirectStr, 0])
+                        mapGraph.nodeNum++
+                    }
+
+                    if (!(negDirectStr in mapGraph)){
+                        mapGraph[negDirectStr] = {indexInLine: j, adj: [[stationStr, transferWeight]]}
+                        mapGraph[stationStr].adj.push([negDirectStr, 0])
+                        mapGraph.nodeNum++
+                    }
+                }
+
+                // 将这些正方向车站、反方向车站按正向、反向顺序连接起来
+                let first = true
+                let lastStr = ""
+                for (let j = 0; j < line.stations.length; j++){
+                    let stationStr = line.stations[j]
+                    let posDirectStr = stationStr + "_" + lineID + "_" + "pos"
+                    if (!first){
+                        mapGraph[lastStr].adj.push([posDirectStr, 1])
+                    } else first = false
+                    lastStr = posDirectStr
+                }
+
+                first = true
+                lastStr = ""
+                for (let i = line.stations.length - 1; i >= 0; i--){
+                    let stationStr = line.stations[i]
+                    let negDirectStr = stationStr + "_" + lineID + "_" + "neg"
+                    if (!first){
+                        mapGraph[lastStr].adj.push([negDirectStr, 1])
+                    } else first = false
+                    lastStr = negDirectStr
+                }
+            }
+                
+        }
+
+        function dijkstra(start, end){
+            if (!(start in mapGraph) || start.includes("_") || !(end in mapGraph) || end.includes("_")){
+                return
+            }
+
+            let visited = {}
+            let distance = {}
+            let prevNode = {}
+            for (let i in mapGraph){
+                visited[i] = false
+                distance[i] = Infinity
+                prevNode[i] = undefined
+            }
+
+            let fullyConnected = true
+
+            distance[start] = 0
+            for (let i = 0; i < mapGraph.nodeNum; i++){
+                var minDistance = Infinity
+                var minNode = undefined
+                for (let j in mapGraph){
+                    if (!visited[j]){
+                        if (distance[j] < minDistance){
+                            minDistance = distance[j]
+                            minNode = j
+                        }
+                    }
+                }
+                //console.log(minDistance, minNode)
+                if (minNode == undefined){
+                    // 算法提前无法继续，说明为非全连通图
+                    fullyConnected = false
+                    break
+                }
+
+                visited[minNode] = true
+                
+                for (let adj of mapGraph[minNode].adj){
+                    adjNode = adj[0]
+                    edgWeight = adj[1]
+                    if (!visited[adjNode] && distance[adjNode] > minDistance + edgWeight){
+                        distance[adjNode] = minDistance + edgWeight
+                        prevNode[adjNode] = minNode
+                        //console.log("UPDATE", adjNode, distance[adjNode])
+                    }
+                }
+            }
+
+            path = []
+
+            let currNode = end
+            while(currNode != undefined){
+                path.push(currNode)
+                currNode = prevNode[currNode]
+            }
+
+            path.reverse()
+
+            // 由于到达 end 肯定需要经过“和线路相关的车站结点”，故每条路径都会加上换乘路径长，减掉即可
+            return {distance: distance[end] != Infinity ? distance[end] - transferWeight : Infinity, path: path, fullyConnected: fullyConnected}
+        }
+
+        SVG.on(document, "DOMContentLoaded", function(){
+            draw = SVG('metro_wrapper').size("100%", "100%").viewbox(0,0,viewPortMaxX, viewPortMaxY)
+            borderRect = draw.rect(viewPortMaxX, viewPortMaxY - stationRadius * 2).move(0, stationRadius * 2).stroke({color: "gray", width: 2}).fill("transparent")
+            drawLineLayer = draw.nested()
+            drawLineRouteLayer = draw.nested()
+            drawStationLayer = draw.nested()
+            
+            document.getElementById("zoomSize").addEventListener("input", function(ev){
+                let ratio = Math.exp((this.value - 40) / 20)
+                draw.size(100 * ratio + "%", 100 * ratio + "%")
+            })
+            
+            mapData = {stations: {}, lines: {}}
+
+            borderRect.draggable().on("dragstart", function(e){
+                frameDragStartX = e.detail.event.clientX
+                frameDragStartY = e.detail.event.clientY
+                frameScrollStartX = document.getElementById("metro_wrapper_wrapper").scrollLeft
+                frameScrollStartY = document.getElementById("metro_wrapper_wrapper").scrollTop
+            })
+
+            borderRect.draggable().on("dragmove", function(e){
+                e.preventDefault()
+                let offsetX = e.detail.event.clientX - frameDragStartX
+                let offsetY = e.detail.event.clientY - frameDragStartY
+                document.getElementById("metro_wrapper_wrapper").scrollLeft = frameScrollStartX  - offsetX
+                document.getElementById("metro_wrapper_wrapper").scrollTop = frameScrollStartY  - offsetY
+            })
+
+            document.getElementById("metro_wrapper_wrapper").addEventListener("mousewheel", function(e){
+                e.preventDefault()
+                var zoomSize = document.getElementById("zoomSize")
+                zoomSize.value -= e.deltaY / 10
+                SVG.adopt(zoomSize).fire("input")
+            })
+
+            for (var panelName of ["addStation", "addLine", "removeStation", "removeLine", "route", "clearAndSave"]){
+                let panelName_ = panelName
+                document.getElementById("a_" + panelName).addEventListener("click", function(e){
+                    if (document.getElementById("panel_" + panelName_).style.display == "none"){
+                        document.getElementById("resp_" + panelName_).style.color = "black"
+                        document.getElementById("resp_" + panelName_).innerText = ""
+                    }
+
+                    let panels = document.getElementsByClassName("panel")
+                    for (let i = 0; i < panels.length; i++){
+                        let panel = panels[i]
+                        if (panel.id != "panel_" + panelName_){
+                            panel.style.display = "none"
+                        } else{
+                            panel.style.display = "inherit"
+                        }
+                    }
+
+                    let optionTabs = document.getElementsByClassName("optionTab")
+                    for (let i = 0; i < optionTabs.length; i++){
+                        let tab = optionTabs[i]
+                        if (tab.id != "a_" + panelName_){
+                            tab.style.color = "paleturquoise"
+                        } else{
+                            tab.style.color = "blue"
+                        }
+                    }
+                    
+                })
+            }
+
+            document.getElementById("a_addLine").addEventListener("click", function(e){
+                let selectStationNode = document.getElementById("selectStation_addLine")
+                selectStationNode.innerHTML = ""
+
+                selectStationList = []
+
+                let stationList = []
+
+                for (let station in mapData.stations){
+                    stationList.push(station)
+                }
+
+                if (stationList.length != 0){
+                    stationList.sort()
+
+                    for (station of stationList){
+                        let nodeLabel = document.createElement("label")
+                        nodeLabel.setAttribute("id", "l_" + station)
+                        nodeLabel.setAttribute("class", "labelStation")
+                        let node = document.createElement("input")
+                        node.setAttribute("type", "checkbox")
+                        node.setAttribute("id", "cb_" + station)
+                        node.setAttribute("rank", -1)
+                        
+                        node.value = station
+                        node.checked = false
+                        node.addEventListener("change", addStationToLine)
+
+                        nodeLabel.appendChild(node)
+                        nodeLabel.appendChild(document.createTextNode(station + " : " + mapData.stations[station].name))
+                        selectStationNode.appendChild(nodeLabel)
+                    }
+
+                } else {
+                    selectStationNode.appendChild(document.createTextNode("当前没有地铁站。请添加一个站点。"))
+                }
+
+            })
+
+            document.getElementById("a_removeStation").addEventListener("click", function(e){
+                let selectStationNode = document.getElementById("selectStation_removeStation")
+                selectStationNode.innerHTML = ""
+
+                selectStationList = []
+
+                let stationList = []
+
+                for (let station in mapData.stations){
+                    stationList.push(station)
+                }
+
+                if (stationList.length != 0){
+                    stationList.sort()
+
+                    for (station of stationList){
+                        let nodeLabel = document.createElement("label")
+                        nodeLabel.setAttribute("id", "lr_" + station)
+                        nodeLabel.setAttribute("class", "labelStation")
+                        let node = document.createElement("input")
+                        node.setAttribute("type", "checkbox")
+                        node.setAttribute("id", "cbr_" + station)
+                        
+                        node.value = station
+                        node.checked = false
+                        node.addEventListener("change", function(e){
+                            if (this.checked){
+                                selectStationList.push(this.value)
+                            } else {
+                                selectStationList.splice(selectStationList.indexOf(this.value), 1)
+                            }
+                        })
+
+                        nodeLabel.appendChild(node)
+                        nodeLabel.appendChild(document.createTextNode(station + " : " + mapData.stations[station].name))
+                        selectStationNode.appendChild(nodeLabel)
+                    }
+
+                } else {
+                    selectStationNode.appendChild(document.createTextNode("当前没有地铁站。请添加一个站点。"))
+                }
+            })
+
+            document.getElementById("a_removeLine").addEventListener("click", function(e){
+                let selectLineNode = document.getElementById("selectLine_removeLine")
+                selectLineNode.innerHTML = ""
+
+                selectLineList = []
+
+                let lineList = []
+
+                for (let line in mapData.lines){
+                    lineList.push(line)
+                }
+
+                if (lineList.length != 0){
+                    lineList.sort()
+
+                    for (line of lineList){
+                        let nodeLabel = document.createElement("label")
+                        nodeLabel.setAttribute("id", "lr_l_" + line)
+                        nodeLabel.setAttribute("class", "labelLine")
+                        let node = document.createElement("input")
+                        node.setAttribute("type", "checkbox")
+                        node.setAttribute("id", "cbr_l_" + line)
+                        
+                        node.value = line
+                        node.checked = false
+                        node.addEventListener("change", function(e){
+                            if (this.checked){
+                                selectLineList.push(this.value)
+                            } else {
+                                selectLineList.splice(selectLineList.indexOf(this.value), 1)
+                            }
+                        })
+
+                        nodeLabel.appendChild(node)
+                        let colorBox = document.createElement("span")
+                        colorBox.setAttribute("class", "colorBox")
+                        colorBox.style.backgroundColor = mapData.lines[line].color
+                        nodeLabel.appendChild(colorBox)
+                        nodeLabel.appendChild(document.createTextNode(line + " : " + mapData.lines[line].name))
+                        selectLineNode.appendChild(nodeLabel)
+                    }
+
+                } else {
+                    selectLineNode.appendChild(document.createTextNode("当前没有地铁线路。请添加一条线路。"))
+                }
+            })
+
+            document.getElementById("a_route").addEventListener("click", function(e){
+                let selectStationNode = document.getElementById("selectStation_route")
+                selectStationNode.innerHTML = ""
+
+                selectStationList = []
+
+                let stationList = []
+
+                for (let station in mapData.stations){
+                    stationList.push(station)
+                }
+
+                if (stationList.length != 0){
+                    stationList.sort()
+
+                    for (station of stationList){
+                        let nodeLabel = document.createElement("label")
+                        nodeLabel.setAttribute("id", "lro_" + station)
+                        nodeLabel.setAttribute("class", "labelStation")
+                        let node = document.createElement("input")
+                        node.setAttribute("type", "checkbox")
+                        node.setAttribute("id", "cbro_" + station)
+                        node.setAttribute("rank", -1)
+                        
+                        node.value = station
+                        node.checked = false
+                        node.addEventListener("change", selectDeptDestStation)
+
+                        nodeLabel.appendChild(node)
+                        nodeLabel.appendChild(document.createTextNode(station + " : " + mapData.stations[station].name))
+                        selectStationNode.appendChild(nodeLabel)
+                    }
+
+                } else {
+                    selectStationNode.appendChild(document.createTextNode("当前没有地铁站。请添加一个站点。"))
+                }
+
+            })
+
+            document.getElementById("submit_addStation").addEventListener("click", function(e){
+                if (prevStation && prevStation.y < stationRadius * 2)
+                {
+                    document.getElementById("resp_addStation").style.color = "red"
+                    document.getElementById("resp_addStation").innerText = "错误：请将上一个添加的站点拖到地图中。"
+                } else {
+                    let name = document.getElementById("name_addStation").value.replace(/(^\s*)|(\s*$)/g, '')
+                    let id = document.getElementById("id_addStation").value.replace(/(^\s*)|(\s*$)/g, '')
+                    let currStation
+                    if (id.includes("_")) {
+                        document.getElementById("resp_addStation").style.color = "red"
+                        document.getElementById("resp_addStation").innerText = "错误：ID 中含有 _ 号。"
+                    } else if (id in mapData.stations) {
+                        document.getElementById("resp_addStation").style.color = "red"
+                        document.getElementById("resp_addStation").innerText = "错误：ID 重复。"
+                    } else if (name == '' || id == ''){
+                        document.getElementById("resp_addStation").style.color = "red"
+                        document.getElementById("resp_addStation").innerText = "错误：输入为空白。"
+                    } else {
+                        currStation = new Station(name, id, stationRadius, stationRadius)
+                        mapData.stations[currStation.id] = currStation
+                        prevStation = currStation
+                        allRedraw()
+                        document.getElementById("resp_addStation").style.color = "black"
+                        document.getElementById("resp_addStation").innerText = "添加成功。请从地图的左上角边框处将新站点拖入地图中。"
+                    }
+                }
+            })
+
+            document.getElementById("submit_addLine").addEventListener("click", function(e){
+                if (selectStationList.length <= 1) {
+                    document.getElementById("resp_addLine").style.color = "red"
+                    document.getElementById("resp_addLine").innerText = "错误：选择的站点数少于 2。"
+                } else {
+                    let name = document.getElementById("name_addLine").value.replace(/(^\s*)|(\s*$)/g, '')
+                    let id = document.getElementById("id_addLine").value.replace(/(^\s*)|(\s*$)/g, '')
+                    let color = document.getElementById("color_addLine").value
+                    let offset = parseFloat(document.getElementById("offset_addLine").value)
+                    if (id.includes("_")) {
+                        document.getElementById("resp_addLine").style.color = "red"
+                        document.getElementById("resp_addLine").innerText = "错误：ID 中含有 _ 号。"
+                    } else if (name == '' || id == '' || color == '' || isNaN(offset)) {
+                        document.getElementById("resp_addLine").style.color = "red"
+                        document.getElementById("resp_addLine").innerText = "错误：输入为空白。"
+                    } else if (id in mapData.lines) {
+                        document.getElementById("resp_addLine").style.color = "red"
+                        document.getElementById("resp_addLine").innerText = "错误：ID 重复。"
+                    } else {
+                        if (document.getElementById("loop_addLine").checked)
+                            selectStationList.push(selectStationList[0])
+                        let currLine = new Line(name, id, color, offset, selectStationList)
+                        mapData.lines[currLine.id] = currLine
+                        allRedraw()
+                        document.getElementById("resp_addLine").style.color = "black"
+                        document.getElementById("resp_addLine").innerText = "添加成功。"
+                        SVG.adopt(document.getElementById("a_addLine")).fire("click")
+                    }
+                }
+            })
+
+            document.getElementById("submit_removeStation").addEventListener("click", function(e){
+                if (selectStationList.length == 0) {
+                    document.getElementById("resp_removeStation").style.color = "red"
+                    document.getElementById("resp_removeStation").innerText = "错误：没有选择车站。"
+                } else { 
+                    for (let station of selectStationList){
+                        for (let line in mapData.lines){
+                            if (mapData.lines[line].stations.indexOf(station) != -1){
+                                mapData.lines[line].dispose()
+                                delete mapData.lines[line]
+                            }
+                        }
+
+                        mapData.stations[station].dispose()
+                        delete mapData.stations[station]
+                    }
+                    document.getElementById("resp_removeStation").style.color = "black"
+                    document.getElementById("resp_removeStation").innerText = "删除成功。"
+                    SVG.adopt(document.getElementById("a_removeStation")).fire("click")
+                }
+            })
+
+            document.getElementById("submit_removeLine").addEventListener("click", function(e){
+                if (selectLineList.length == 0) {
+                    document.getElementById("resp_removeLine").style.color = "red"
+                    document.getElementById("resp_removeLine").innerText = "错误：没有选择线路。"
+                } else { 
+                    for (let line of selectLineList){
+                        mapData.lines[line].dispose()
+                        delete mapData.lines[line]
+                    }
+                    document.getElementById("resp_removeLine").style.color = "black"
+                    document.getElementById("resp_removeLine").innerText = "删除成功。"
+                    SVG.adopt(document.getElementById("a_removeLine")).fire("click")
+                }
+            })
+
+            document.getElementById("submit_route").addEventListener("click", function(e){
+                document.getElementById("result_route").innerHTML = ""
+                if (selectStationList.length == 0) {
+                    document.getElementById("resp_route").style.color = "red"
+                    document.getElementById("resp_route").innerText = "错误：没有选择车站。"
+                } else { 
+                    var tw = document.getElementById("transferWeight_route").value
+                    var twi = parseFloat(tw)
+                    if (tw == "" || twi < 0){
+                        document.getElementById("resp_route").style.color = "red"
+                        document.getElementById("resp_route").innerText = "换乘权重输入错误。"
+                        return
+                    }
+                    transferWeight = twi
+                    allRedraw()
+                    dataToGraph()
+                    let result = dijkstra(selectStationList[0], selectStationList[1])
+                    if (result == undefined){
+                        document.getElementById("resp_route").style.color = "red"
+                        document.getElementById("resp_route").innerText = "未知错误发生。"
+                    } else if (result.distance == Infinity) {
+                        document.getElementById("resp_route").style.color = "red"
+                        document.getElementById("resp_route").innerText = "起点到终点之间没有路径，请检查地铁线路布置的完备性。"
+                    } else {
+                        drawLineRouteLayer.clear()
+                        document.getElementById("resp_route").style.color = "black"
+                        document.getElementById("resp_route").innerText = "找到了起点和终点间的最短路径。"
+                        if (result.fullyConnected == false){
+                            document.getElementById("resp_route").innerText += "但该地铁图非全连通图，请检查设计的完备性。"
+                        }
+
+                        let distance = result.distance
+                        let path = result.path
+
+                        let ol = document.createElement("ol")
+                        let p = document.createElement("p")
+                        document.getElementById("result_route").appendChild(ol)
+                        document.getElementById("result_route").appendChild(p)
+
+                        let currLineID
+                        let currDirection
+                        let currStationCount
+                        let currLineText
+                        let currLastStation
+                        for (let i = 0; i < path.length; i++){
+                            let id = path[i]
+                            let id_ = path[i]
+                            id = id.split("_")
+                            if (i == path.length - 1)  {
+                                currLineText.textContent += "，经过 " +  currStationCount + " 站，到" + mapData.stations[id].name
+                            } else if (i == 0) {
+                                let newNode = document.createElement("li")
+                                ol.appendChild(newNode)
+                                let newText = document.createTextNode("")
+                                newNode.appendChild(newText)
+                                
+                                newText.textContent += "从" + mapData.stations[id].name + "出发"
+                            }
+
+                            if (id.length == 3) {
+                                let stationID = id[0]
+                                let lineID = id[1]
+                                let direction = id[2]
+                                let line = mapData.lines[lineID]
+
+                                
+
+                                if (lineID != currLineID || direction != currDirection){
+                                    let newNode = document.createElement("li")
+                                    ol.appendChild(newNode)
+                                    let newText = document.createTextNode("")
+                                    newNode.appendChild(newText)
+                                    if (currLineID != undefined){
+                                        currLineText.textContent += "，经过 " +  currStationCount + " 站，到" + mapData.stations[stationID].name
+                                        
+                                        newText.textContent += "转"
+                                    }
+                                    
+                                    newText.textContent += "乘"
+
+                                    let colorBox = document.createElement("span")
+                                    colorBox.setAttribute("class", "colorBox")
+                                    colorBox.style.backgroundColor = line.color
+                                    newNode.appendChild(colorBox)
+                                    let lineText = document.createTextNode("")
+                                    newNode.appendChild(lineText)
+                                    lineText.textContent = line.name + (direction == "pos" ? "正方向" : "反方向") + "("
+
+                                    let terminalStart = mapData.stations[line.stations[0]].name
+                                    let terminalNext = mapData.stations[line.stations[1]].name
+ 
+                                    let terminalLast = (mapData.stations[line.stations[line.stations.length - 2]]).name
+                                    let terminalEnd = (mapData.stations[line.stations[line.stations.length - 1]]).name
+                                    lineText.textContent += (direction == "pos" ? terminalStart : terminalEnd)
+                                    lineText.textContent += "→"
+                                    lineText.textContent += (direction == "pos" ? terminalNext : terminalLast)
+                                    lineText.textContent += "…"
+                                    lineText.textContent += (direction == "pos" ? terminalEnd : terminalStart)
+                                    lineText.textContent += ")"
+
+                                    currLineID = lineID
+                                    currDirection = direction
+                                    currStationCount = 0
+                                    currLineText = lineText
+                                    
+                                } else {
+                                    currStationCount++
+                                    if (currLastStation != undefined){
+                                        let indexInLine
+                                        if (direction == "pos")
+                                            indexInLine = mapGraph[currLastStation].indexInLine
+                                        else
+                                            indexInLine = mapGraph[currLastStation].indexInLine == 0 ? line.svgLines.length - 1 : mapGraph[currLastStation].indexInLine - 1
+
+                                        //console.log(i + " " + id_ + " " + mapGraph[currLastStation].indexInLine + " " + indexInLine)
+                                        
+                                        let cloned1 = line.svgLines[indexInLine].clone(drawLineRouteLayer)
+                                        cloned1.stroke({width: cloned1.attr("stroke-width") + 10, color: line.color})
+                                        let cloned2 = line.svgLines[indexInLine].clone(drawLineRouteLayer)
+                                        cloned2.stroke({width: cloned2.attr("stroke-width") + 5, color: "white"})
+                                        let cloned0 = line.svgLines[indexInLine].clone(drawLineRouteLayer)
+                                    }
+                                }
+                                
+                                currLastStation = id_
+                            }
+                        }
+                        p.innerText = "路径长度为 " + distance + "。"
+                    }
+                }
+                SVG.adopt(document.getElementById("a_route")).fire("click")
+            })
+
+            document.getElementById("clear_clearAndSave").addEventListener("click", function(e){
+                allClear()
+                document.getElementById("resp_clearAndSave").style.color = "black"
+                document.getElementById("resp_clearAndSave").innerText = "清除成功。"
+            })
+
+            document.getElementById("save_clearAndSave").addEventListener("click", function(e){
+                let error = false
+                try{
+                    saveMapData()
+                } catch (err) {
+                    error = true
+                    document.getElementById("resp_clearAndSave").style.color = "red"
+                    document.getElementById("resp_clearAndSave").innerText = "错误：" + err.message
+                }
+
+                if (!error){
+                    document.getElementById("resp_clearAndSave").style.color = "black"
+                    document.getElementById("resp_clearAndSave").innerText = "保存成功。"
+                }
+            })
+
+            document.getElementById("load_clearAndSave").addEventListener("click", function(e){
+                let result = loadMapData()
+                if (result) {
+                    document.getElementById("resp_clearAndSave").style.color = "black"
+                    document.getElementById("resp_clearAndSave").innerText = "已经从存储加载地图。"
+                } else {
+                    document.getElementById("resp_clearAndSave").style.color = "red"
+                    document.getElementById("resp_clearAndSave").innerText = "加载失败，可能本地存储没有地图信息或浏览器不支持本地存储（localStorage）。"
+                }
+            })
+
+            document.getElementById("loadSH_clearAndSave").addEventListener("click", function(e){
+                loadMapData(SHMetroData)
+
+                document.getElementById("resp_clearAndSave").style.color = "black"
+                document.getElementById("resp_clearAndSave").innerText = "加载上海地铁成功。"
+            })
+
+            document.getElementById("import_clearAndSave").addEventListener("click", function(e){
+                let errOccured = false
+                try{
+                    loadMapData(document.getElementById("text_clearAndSave").value)
+                }catch(err){
+                    errOccured = true
+                    document.getElementById("resp_clearAndSave").style.color = "red"
+                    document.getElementById("resp_clearAndSave").innerText = "有错误发生：" + err.message
+                }
+                if (!errOccured){
+                    document.getElementById("resp_clearAndSave").style.color = "black"
+                    document.getElementById("resp_clearAndSave").innerText = "导入JSON成功。"
+                }
+            })
+
+            document.getElementById("export_clearAndSave").addEventListener("click", function(e){
+                document.getElementById("text_clearAndSave").value = dumpMapData()
+                document.getElementById("text_clearAndSave").select()
+                document.getElementById("resp_clearAndSave").style.color = "black"
+                document.getElementById("resp_clearAndSave").innerText = "导出JSON成功。"
+            })
+
+            var fontSizeChangedEvent = function(e){
+                /* var css = document.styleSheets[0].cssRules
+                for (let i = 0;  i < css.length; i++){
+                    if (css[i].selectorText == ".stationCaption") {
+                        css[i].style.cssText = "cursor: default; font-size: " + (this.value == "" ? 20 : this.value) + "pt;"
+                        break
+                    }
+                } */
+                captionFontSize = (this.value == "" ? captionFontSize : this.value)
+                captionRedraw()
+            }
+            document.getElementById("usual_fontSize").addEventListener("input", fontSizeChangedEvent)
+            document.getElementById("usual_stationRadius").addEventListener("input", function(e){
+                stationRadius = (this.value == "" ? stationRadius : this.value)
+                stationRedraw()
+            })
+            document.getElementById("usual_stationStrokeWidth").addEventListener("input", function(e){
+                stationStrokeWidth = (this.value == "" ? stationStrokeWidth : this.value)
+                stationRedraw()
+            })
+            document.getElementById("usual_lineWidth").addEventListener("input", function(e){
+                lineWidth = (this.value == "" ? lineWidth : this.value)
+                lineRedraw()
+            })
+
+            SVG.adopt(document.getElementById("a_addStation")).fire("click")
+            SVG.adopt(document.getElementById("load_clearAndSave")).fire("click")
+            SVG.adopt(document.getElementById("usual_fontSize")).fire("input")
+            SVG.adopt(document.getElementById("usual_stationRadius")).fire("input")
+            SVG.adopt(document.getElementById("usual_stationStrokeWidth")).fire("input")
+            SVG.adopt(document.getElementById("usual_lineWidth")).fire("input")
+
+        })
+
+        
+
+        
+    </script>
+</head>
+<body>
+    <div id="upper_main" style="height: 95%; display:flex;">
+        <div id="metro_wrapper_wrapper" style="overflow:scroll; height: 100%; flex: 8; ">
+            <div id="metro_wrapper" style="height: 100%">
+
+            </div>
+        </div>
+        <div id="upper_options" style="flex: 2; height: 100%">
+            <div style="height: 5%;">
+                <h2 style="text-align: center; margin: 0">地铁管理与寻路系统</h2>
+            </div>
+            <div id="panel_tabs" style="height: 5%; overflow: visible;">
+                <a id="a_addStation" class="optionTab" href="javascript:void(0)" style="color: paleturquoise">添加站点</a>
+                <a id="a_removeStation" class="optionTab" href="javascript:void(0)" style="color:paleturquoise">删除站点</a>
+                <a id="a_addLine" class="optionTab" href="javascript:void(0)" style="color:paleturquoise">添加线路</a>
+                <a id="a_removeLine" class="optionTab" href="javascript:void(0)" style="color:paleturquoise">查看、管理线路</a>
+                <a id="a_route" class="optionTab" href="javascript:void(0)" style="color:paleturquoise">寻路</a>
+                <a id="a_clearAndSave" class="optionTab" href="javascript:void(0)" style="color:paleturquoise">清除、保存、加载</a>
+            </div>
+
+            <div id="panels" style="height:70%; overflow:auto;">
+                <div id="panel_addStation" class="panel" style="display: none">
+                    <p><label>站点名：<input id="name_addStation"  /></label>
+                    <p><label>站点ID：<input id="id_addStation"  /></label></p>
+                    <p><button id="submit_addStation">提交</button></p>
+                    <p><span id="resp_addStation"></span></p>
+                </div>
+                <div id="panel_addLine" class="panel" style="display: none">
+                    <p><label>线路名：<input id="name_addLine"  value="Line 1"/></label>
+                    <p><label>线路ID：<input id="id_addLine" value="l1" /></label></p>
+                    <p><label>线路绘制偏移量(默认为0)：<input id="offset_addLine" type="number" value="0" /></label></p>
+                    <p><label>线路颜色：<input id="color_addLine" type="color" value="#ffff00" /></label></p>
+                    
+                    <div>请按顺时针方向，按顺序选择该线路的途径站点：</div>
+                    <div id="selectStation_addLine" class="panel_select">
+
+                    </div>
+                    
+                    <p><label><input id="loop_addLine" type="checkbox" />环线</label></p>
+                    <p><button id="submit_addLine">提交</button></p>
+                    <p><span id="resp_addLine"></span></p>
+                </div>
+                <div id="panel_removeStation" class="panel" style="display: none">
+                    
+                    <div>请选择要删除的站点：</div>
+                    <p style="color:red;">注意：删除站点将删除所有与站点连接的线路！</p>
+                    <div id="selectStation_removeStation" class="panel_select">
+
+                    </div>
+                    
+                    <p><button id="submit_removeStation">提交</button></p>
+                    <p><span id="resp_removeStation"></span></p>
+                </div>
+                <div id="panel_removeLine" class="panel" style="display: none">
+                    
+                    <div>若要删除线路，请在相应线路前的框内打勾并提交。</div>
+                    
+                    <div id="selectLine_removeLine" class="panel_select">
+
+                    </div>
+                    
+                    <p><button id="submit_removeLine">提交</button></p>
+                    <p><span id="resp_removeLine"></span></p>
+                </div>
+                <div id="panel_route" class="panel" style="display: none">
+                    
+                    <div>请按顺序选择起点和终点</div>
+                    <div id="selectStation_route" class="panel_select">
+
+                    </div>
+                    <p>换乘权重：<input type="number" value="3" defaultValue="3" id="transferWeight_route" /></p>
+                    <p><button id="submit_route">提交</button></p>
+                    <div id="result_route"></div>
+                    <p><span id="resp_route"></span></p>
+                </div>
+                <div id="panel_clearAndSave" class="panel" style="display: none">
+                    <p><button id="clear_clearAndSave">清除所有站点和线路</button><button id="save_clearAndSave">保存地图到本地存储</button></p>
+                    <p><button id="load_clearAndSave">从本地存储加载地图</button><button id="loadSH_clearAndSave">加载上海地铁图</button></p>
+                    
+                    <p><textarea style="height: 250pt; width: 90%;" id="text_clearAndSave"></textarea></p>
+                    <p><span id="resp_clearAndSave"></span></p>
+
+                    <p><button id="export_clearAndSave">导出到 JSON</button><button id="import_clearAndSave">导入 JSON 地图数据</button></p>
+                </div>
+            </div>
+
+            <div id="usual_options" style="height:20%; overflow: auto;">
+                <p><span>站名字体大小：</span><input type="number" id="usual_fontSize" value=12 /> px</p>
+                <p><span>站点半径：</span><input type="number" id="usual_stationRadius" value=18 /> px</p>
+                <p><span>站点描边：</span><input type="number" id="usual_stationStrokeWidth" value=4 /> px</p>
+                <p><span>线路宽度：</span><input type="number" id="usual_lineWidth" value=8 /> px</p>
+            </div>
+        </div>
+    </div>
+    <div id="metro_toolbar" style="height:5%; width:100%; display:flex">
+        <div style="flex:1; overflow:hidden">
+            <div>缩放条：<div style="font-size: x-small;">（也可在地图边框内滚动缩放）</div></div>
+        </div>
+        <div style="flex:8">
+            <input type="range" id="zoomSize" min="1" max="100" step="1" value="40" defaultValue="40" style="width: 100%; height: 100%" />
+        </div>
+    </div>
+</body>
+</html>
